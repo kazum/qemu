@@ -1265,13 +1265,17 @@ static int coroutine_fn resend_aioreq(BDRVSheepdogState *s, AIOReq *aio_req)
         return ret;
     }
 
-    aio_req->oid = vid_to_data_oid(s->inode.vdi_id,
-                                   data_oid_to_idx(aio_req->oid));
+    if (is_data_obj(aio_req->oid)) {
+        aio_req->oid = vid_to_data_oid(s->inode.vdi_id,
+                                       data_oid_to_idx(aio_req->oid));
+    } else {
+        aio_req->oid = vid_to_vdi_oid(s->inode.vdi_id);
+    }
 
     /* check whether this request becomes a CoW one */
-    if (acb->aiocb_type == AIOCB_WRITE_UDATA) {
+    if (acb->aiocb_type == AIOCB_WRITE_UDATA && is_data_obj(aio_req->oid)) {
         int idx = data_oid_to_idx(aio_req->oid);
-        AIOReq *areq;
+        AIOReq *areq, *next;
 
         if (s->inode.data_vdi_id[idx] == 0) {
             create = true;
@@ -1283,7 +1287,7 @@ static int coroutine_fn resend_aioreq(BDRVSheepdogState *s, AIOReq *aio_req)
 
         /* link to the pending list if there is another CoW request to
          * the same object */
-        QLIST_FOREACH(areq, &s->inflight_aio_head, aio_siblings) {
+        QLIST_FOREACH_SAFE(areq, &s->inflight_aio_head, aio_siblings, next) {
             if (areq != aio_req && areq->oid == aio_req->oid) {
                 dprintf("simultaneous CoW to %" PRIx64 "\n", aio_req->oid);
                 QLIST_REMOVE(aio_req, aio_siblings);
@@ -1297,8 +1301,15 @@ static int coroutine_fn resend_aioreq(BDRVSheepdogState *s, AIOReq *aio_req)
         create = true;
     }
 out:
-    return add_aio_request(s, aio_req, acb->qiov->iov, acb->qiov->niov,
-                           create, acb->aiocb_type);
+    if (is_data_obj(aio_req->oid)) {
+        return add_aio_request(s, aio_req, acb->qiov->iov, acb->qiov->niov,
+                               create, acb->aiocb_type);
+    } else {
+        struct iovec iov;
+        iov.iov_base = &s->inode;
+        iov.iov_len = sizeof(s->inode);
+        return add_aio_request(s, aio_req, &iov, 1, false, AIOCB_WRITE_UDATA);
+    }
 }
 
 /* TODO Convert to fine grained options */
