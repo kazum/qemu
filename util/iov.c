@@ -202,6 +202,14 @@ ssize_t iov_send_recv(int sockfd, struct iovec *iov, unsigned iov_cnt,
             return -1;
         }
 
+        if (ret == 0 && !do_send) {
+            /* write (send) should never return 0.
+             * read (recv) returns 0 for end-of-file (-data).
+             * In both cases there's little point retrying,
+             * but we do for write anyway, just in case */
+            break;
+        }
+
         /* Prepare for the next iteration */
         offset += ret;
         total += ret;
