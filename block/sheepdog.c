@@ -455,18 +455,51 @@ static SheepdogAIOCB *sd_aio_setup(BlockDriverState *bs, QEMUIOVector *qiov,
     return acb;
 }
 
-static int connect_to_sdog(BDRVSheepdogState *s)
-{
+typedef struct SheepdogConnectCo {
+    BDRVSheepdogState *bs;
+    Coroutine *co;
     int fd;
+    bool finished;
+} SheepdogConnectCo;
+
+static void sd_connect_completed(int fd, void *opaque)
+{
+    SheepdogConnectCo *scco = opaque;
+
+    if (fd < 0) {
+        int val, rc;
+        socklen_t valsize = sizeof(val);
+
+        do {
+            rc = qemu_getsockopt(scco->fd, SOL_SOCKET, SO_ERROR, &val,
+                                 &valsize);
+        } while (rc == -1 && socket_error() == EINTR);
+
+        scco->fd = rc < 0 ? -errno : -val;
+    }
+
+    scco->finished = true;
+
+    if (scco->co != NULL) {
+        qemu_coroutine_enter(scco->co, NULL);
+    }
+}
+
+static coroutine_fn void co_connect_to_sdog(void *opaque)
+{
+    SheepdogConnectCo *scco = opaque;
+    BDRVSheepdogState *s = scco->bs;
     Error *err = NULL;
 
     if (s->is_unix) {
-        fd = unix_connect(s->host_spec, &err);
+        scco->fd = unix_nonblocking_connect(s->host_spec, sd_connect_completed,
+                                            opaque, &err);
     } else {
-        fd = inet_connect(s->host_spec, &err);
+        scco->fd = inet_nonblocking_connect(s->host_spec, sd_connect_completed,
+                                            opaque, &err);
 
         if (err == NULL) {
-            int ret = socket_set_nodelay(fd);
+            int ret = socket_set_nodelay(scco->fd);
             if (ret < 0) {
                 error_report("%s", strerror(errno));
             }
@@ -476,11 +509,34 @@ static int connect_to_sdog(BDRVSheepdogState *s)
     if (err != NULL) {
         qerror_report_err(err);
         error_free(err);
-    } else {
-        qemu_set_nonblock(fd);
     }
 
-    return fd;
+    if (!scco->finished) {
+        /* wait for connect to finish */
+        scco->co = qemu_coroutine_self();
+        qemu_coroutine_yield();
+    }
+}
+
+static int connect_to_sdog(BDRVSheepdogState *s)
+{
+    Coroutine *co;
+    SheepdogConnectCo scco = {
+        .bs = s,
+        .finished = false,
+    };
+
+    if (qemu_in_coroutine()) {
+        co_connect_to_sdog(&scco);
+    } else {
+        co = qemu_coroutine_create(co_connect_to_sdog);
+        qemu_coroutine_enter(co, &scco);
+        while (!scco.finished) {
+            qemu_aio_wait();
+        }
+    }
+
+    return scco.fd;
 }
 
 static coroutine_fn int send_co_req(int sockfd, SheepdogReq *hdr, void *data,
