@@ -218,6 +218,11 @@ typedef struct ConnectState {
 static int inet_connect_addr(struct addrinfo *addr, bool *in_progress,
                              ConnectState *connect_state, Error **errp);
 
+static int return_true(void *opaque)
+{
+    return 1;
+}
+
 static void wait_for_connect(void *opaque)
 {
     ConnectState *s = opaque;
@@ -225,7 +230,7 @@ static void wait_for_connect(void *opaque)
     socklen_t valsize = sizeof(val);
     bool in_progress;
 
-    qemu_set_fd_handler2(s->fd, NULL, NULL, NULL, NULL);
+    qemu_aio_set_fd_handler(s->fd, NULL, NULL, NULL, NULL);
 
     do {
         rc = qemu_getsockopt(s->fd, SOL_SOCKET, SO_ERROR, &val, &valsize);
@@ -288,8 +293,8 @@ static int inet_connect_addr(struct addrinfo *addr, bool *in_progress,
 
     if (connect_state != NULL && QEMU_SOCKET_RC_INPROGRESS(rc)) {
         connect_state->fd = sock;
-        qemu_set_fd_handler2(sock, NULL, NULL, wait_for_connect,
-                             connect_state);
+        qemu_aio_set_fd_handler(sock, NULL, wait_for_connect, return_true,
+                                connect_state);
         *in_progress = true;
     } else if (rc < 0) {
         error_set_errno(errp, errno, QERR_SOCKET_CONNECT_FAILED);
@@ -749,8 +754,8 @@ int unix_connect_opts(QemuOpts *opts, Error **errp,
 
     if (connect_state != NULL && QEMU_SOCKET_RC_INPROGRESS(rc)) {
         connect_state->fd = sock;
-        qemu_set_fd_handler2(sock, NULL, NULL, wait_for_connect,
-                             connect_state);
+        qemu_aio_set_fd_handler(sock, NULL, wait_for_connect, return_true,
+                                connect_state);
         return sock;
     } else if (rc >= 0) {
         /* non blocking socket immediate success, call callback */
