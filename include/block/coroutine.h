@@ -210,6 +210,14 @@ void qemu_co_rwlock_unlock(CoRwlock *lock);
 void coroutine_fn co_sleep_ns(QEMUClock *clock, int64_t ns);
 
 /**
+ * Yield the coroutine for a given duration
+ *
+ * Note this function uses timers and hence only works when a main loop is in
+ * use.  See main-loop.h and do not use from qemu-tool programs.
+ */
+void coroutine_fn co_aio_sleep_ns(int64_t ns);
+
+/**
  * Yield until a file descriptor becomes readable
  *
  * Note that this function clobbers the handlers for the file descriptor.
